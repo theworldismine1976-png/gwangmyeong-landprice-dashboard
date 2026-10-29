@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>광명시 공시지가 대시보드</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--tx:#1d2330;--mut:#6b7280;--line:#e3e6eb;--pri:#2563eb;--warn:#dc2626}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Malgun Gothic",system-ui,sans-serif;background:var(--bg);color:var(--tx)}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;padding:14px 20px;background:var(--card);border-bottom:1px solid var(--line)}
+h1{font-size:18px;margin:0}
+.sub{font-size:12px;color:var(--mut)}
+button,label.btn{font:inherit;font-size:13px;padding:7px 12px;border:1px solid var(--line);background:#fff;border-radius:6px;cursor:pointer}
+main{padding:16px 20px;display:grid;gap:16px;max-width:1400px;margin:auto}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px}
+.kpi b{display:block;font-size:22px;margin-top:4px}
+.kpi span{font-size:12px;color:var(--mut)}
+.grid{display:grid;grid-template-columns:3fr 2fr;gap:16px}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+#map{height:460px;border-radius:6px}
+h2{font-size:14px;margin:0 0 10px}
+.bar{display:grid;grid-template-columns:70px 1fr 90px;gap:8px;align-items:center;font-size:12px;margin:5px 0}
+.bar i{display:block;height:14px;background:var(--pri);border-radius:3px}
+.bar em{font-style:normal;text-align:right}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+td.n{text-align:right}
+.tbl{max-height:300px;overflow:auto}
+.flag{color:var(--warn)}
+.legend{font-size:11px;color:var(--mut);margin-top:6px;display:flex;align-items:center;gap:6px}
+.legend span{display:inline-block;width:120px;height:10px;background:linear-gradient(90deg,#fde68a,#f97316,#7f1d1d);border-radius:3px}
+select{font:inherit;font-size:13px;padding:6px;border:1px solid var(--line);border-radius:6px}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>광명시 공시지가 대시보드</h1>
+    <div class="sub" id="src">샘플 데이터 (CSV를 올리면 실제 데이터로 교체됩니다)</div>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <select id="dong"><option value="">전체 동</option></select>
+    <label class="btn">CSV 불러오기<input id="file" type="file" accept=".csv" hidden></label>
+    <button id="tpl">양식 받기</button>
+  </div>
+</header>
+<main>
+  <div class="kpis" id="kpis"></div>
+  <div class="grid">
+    <div class="card"><h2>지도 (색 = 공시지가, 빨간 테두리 = 검증 필요)</h2><div id="map"></div>
+      <div class="legend">낮음 <span></span> 높음</div></div>
+    <div class="card"><h2>동별 평균 공시지가 (원/㎡)</h2><div id="bars"></div></div>
+  </div>
+  <div class="card"><h2>검증 필요 필지 <span class="sub" id="vcount"></span></h2><div class="tbl" id="vtbl"></div></div>
+</main>
+
+<script>
+const COLS=['법정동','지번','지목','면적','공시지가','전년공시지가','위도','경도'];
+const CENTER={광명동:[37.4786,126.8644],철산동:[37.4755,126.8680],하안동:[37.4650,126.8760],소하동:[37.4430,126.8860],일직동:[37.4220,126.8870],노온사동:[37.4260,126.8420],가학동:[37.4310,126.8650],옥길동:[37.4140,126.8240],학온동:[37.4100,126.8480]};
+const BOUNDS={lat:[37.40,37.50],lng:[126.80,126.91]}; // 광명시 대략 범위
+const OUTLIER=0.3; // 전년 대비 ±30% 초과 시 검증 대상
+let rows=[],map,layer;
+
+function sample(){
+  let s=7;const r=()=>(s=(s*9301+49297)%233280)/233280;
+  const base={광명동:3500000,철산동:5200000,하안동:4300000,소하동:2600000,일직동:3900000,노온사동:1000000,가학동:900000,옥길동:2200000,학온동:700000};
+  const out=[];
+  for(const d in CENTER)for(let i=0;i<25;i++){
+    const p=Math.round(base[d]*(0.6+r()*0.9)/1000)*1000, prev=Math.round(p/(1.03+r()*0.06)/1000)*1000;
+    out.push({법정동:d,지번:(Math.floor(r()*900)+1)+'-'+Math.floor(r()*20),지목:['대','전','답','임야','도로'][Math.floor(r()*5)],
+      면적:Math.round(100+r()*900),공시지가:p,전년공시지가:prev,
+      위도:CENTER[d][0]+(r()-.5)*.012,경도:CENTER[d][1]+(r()-.5)*.012});
+  }
+  // 검증용 오류 예시
+  out[3].공시지가=out[3].전년공시지가*2.1; out[40].위도=NaN; out[77].공시지가=0; out[120].위도=36.9;
+  return out;
+}
+
+function parseCSV(t){
+  const lines=t.replace(/^﻿/,'').trim().split(/\r?\n/);
+  const split=l=>{const o=[];let c='',q=false;for(const ch of l){if(ch=='"')q=!q;else if(ch==','&&!q){o.push(c);c=''}else c+=ch}o.push(c);return o.map(x=>x.trim())};
+  const h=split(lines[0]);
+  return lines.slice(1).filter(l=>l.trim()).map(l=>{const v=split(l),o={};h.forEach((k,i)=>o[k]=v[i]);
+    ['면적','공시지가','전년공시지가','위도','경도'].forEach(k=>o[k]=o[k]===''||o[k]==null?NaN:Number(String(o[k]).replace(/,/g,'')));return o});
+}
+
+function problems(r){
+  const p=[];
+  if(!(r.공시지가>0))p.push('공시지가 누락/0');
+  if(!isFinite(r.위도)||!isFinite(r.경도))p.push('좌표 누락');
+  else if(r.위도<BOUNDS.lat[0]||r.위도>BOUNDS.lat[1]||r.경도<BOUNDS.lng[0]||r.경도>BOUNDS.lng[1])p.push('좌표가 광명시 밖');
+  if(r.공시지가>0&&r.전년공시지가>0){const c=r.공시지가/r.전년공시지가-1;if(Math.abs(c)>OUTLIER)p.push('전년대비 '+(c*100).toFixed(0)+'%')}
+  if(!(r.면적>0))p.push('면적 누락');
+  return p;
+}
+const won=n=>isFinite(n)?Math.round(n).toLocaleString():'-';
+const color=(v,min,max)=>{const t=Math.min(1,Math.max(0,(v-min)/(max-min||1)));const a=[253,230,138],m=[249,115,22],b=[127,29,29];
+  const [x,y,u]=t<.5?[a,m,t*2]:[m,b,(t-.5)*2];return `rgb(${x.map((c,i)=>Math.round(c+(y[i]-c)*u))})`};
+
+function render(){
+  const dsel=document.getElementById('dong').value;
+  const data=rows.filter(r=>!dsel||r.법정동==dsel);
+  const valid=data.filter(r=>r.공시지가>0);
+  const prices=valid.map(r=>r.공시지가).sort((a,b)=>a-b);
+  const avg=prices.reduce((a,b)=>a+b,0)/(prices.length||1);
+  const chg=valid.filter(r=>r.전년공시지가>0).map(r=>r.공시지가/r.전년공시지가-1);
+  const bad=data.map(r=>({r,p:problems(r)})).filter(x=>x.p.length);
+  const k=[['총 필지',data.length.toLocaleString()],['평균(원/㎡)',won(avg)],['중앙값',won(prices[Math.floor(prices.length/2)])],
+    ['최고',won(prices[prices.length-1])],['최저',won(prices[0])],
+    ['전년대비 평균',chg.length?(chg.reduce((a,b)=>a+b,0)/chg.length*100).toFixed(1)+'%':'-'],
+    ['검증 필요',bad.length+'건']];
+  document.getElementById('kpis').innerHTML=k.map(([a,b])=>`<div class="card kpi"><span>${a}</span><b${a=='검증 필요'&&bad.length?' class="flag"':''}>${b}</b></div>`).join('');
+
+  // 동별 막대
+  const g={};rows.filter(r=>r.공시지가>0).forEach(r=>(g[r.법정동]??=[]).push(r.공시지가));
+  const ar=Object.entries(g).map(([d,v])=>[d,v.reduce((a,b)=>a+b,0)/v.length,v.length]).sort((a,b)=>b[1]-a[1]);
+  const mx=ar[0]?ar[0][1]:1;
+  document.getElementById('bars').innerHTML=ar.map(([d,v,n])=>`<div class="bar"><span>${d}</span><i style="width:${v/mx*100}%"></i><em>${won(v)}</em></div>`).join('');
+
+  // 지도
+  layer.clearLayers();const pts=[];
+  const badSet=new Set(bad.map(x=>x.r));
+  data.forEach(r=>{if(!isFinite(r.위도)||!isFinite(r.경도))return;
+    const isBad=badSet.has(r);
+    L.circleMarker([r.위도,r.경도],{radius:7,weight:isBad?3:1,color:isBad?'#dc2626':'#555',fillColor:r.공시지가>0?color(r.공시지가,prices[0],prices[prices.length-1]):'#ccc',fillOpacity:.85})
+     .bindPopup(`<b>${r.법정동} ${r.지번}</b><br>지목: ${r.지목||'-'} / ${won(r.면적)}㎡<br>공시지가: ${won(r.공시지가)}원/㎡<br>전년: ${won(r.전년공시지가)}`+(isBad?`<br><span style="color:#dc2626">${problems(r).join(', ')}</span>`:'')).addTo(layer);
+    if(r.위도>BOUNDS.lat[0]&&r.위도<BOUNDS.lat[1])pts.push([r.위도,r.경도])});
+  if(pts.length)map.fitBounds(pts,{padding:[20,20]});
+
+  document.getElementById('vcount').textContent=`(${bad.length}건)`;
+  document.getElementById('vtbl').innerHTML=bad.length?`<table><tr><th>법정동</th><th>지번</th><th>공시지가</th><th>전년</th><th>사유</th></tr>`+
+    bad.slice(0,200).map(({r,p})=>`<tr><td>${r.법정동}</td><td>${r.지번}</td><td class="n">${won(r.공시지가)}</td><td class="n">${won(r.전년공시지가)}</td><td class="flag">${p.join(', ')}</td></tr>`).join('')+'</table>':'<span class="sub">문제 없음</span>';
+}
+
+function setRows(d,label){
+  rows=d;document.getElementById('src').textContent=label;
+  const sel=document.getElementById('dong');
+  sel.innerHTML='<option value="">전체 동</option>'+[...new Set(rows.map(r=>r.법정동))].sort().map(x=>`<option>${x}</option>`).join('');
+  render();
+}
+
+map=L.map('map').setView([37.4786,126.8644],13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap',maxZoom:19}).addTo(map);
+layer=L.layerGroup().addTo(map);
+document.getElementById('dong').onchange=render;
+document.getElementById('file').onchange=async e=>{
+  const f=e.target.files[0];if(!f)return;
+  const buf=await f.arrayBuffer();
+  let t=new TextDecoder('utf-8').decode(buf);
+  if(t.includes('�'))t=new TextDecoder('euc-kr').decode(buf); // 엑셀 CSV(CP949) 대응
+  setRows(parseCSV(t),`${f.name} (${f.size.toLocaleString()} bytes)`);
+};
+document.getElementById('tpl').onclick=()=>{
+  const b=new Blob(['﻿'+COLS.join(',')+'\n광명동,123-4,대,330,3500000,3400000,37.4786,126.8644\n'],{type:'text/csv'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='공시지가_양식.csv';a.click();
+};
+setRows(sample(),'샘플 데이터 (CSV를 올리면 실제 데이터로 교체됩니다)');
+</script>
+</body>
+</html>
